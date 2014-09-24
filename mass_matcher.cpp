@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 #include <cmath>
+#include <pthread.h>
 
 using namespace std;
 
@@ -117,11 +118,28 @@ xpsm matchScan(map<double, ion> xlinks, ion scan, double error = 0.00001, int to
 }
 
 
+void *matchScanThread(void *x) {
+	xpsm *temp = (xpsm *)x;
+	xpsm ret = matchScan(temp->candidates, temp->scan);
+	temp->candidates = ret.candidates;
+  return NULL;
+}
+
+
 vector<xpsm> match(map<double, ion> xlinks, map<double, ion> scans, double error = 0.00001, int top = 100) {
 
   vector<xpsm> xpsms;
+  vector<pthread_t> pool;
   for(map<double, ion>::iterator it=scans.begin(); it!=scans.end(); ++it) {
-  	xpsms.push_back(matchScan(xlinks, it->second, error, top));
+  	pthread_t t;
+  	xpsm x; x.scan = it->second; x.candidates = xlinks;
+  	pthread_create(&t, NULL, matchScanThread, &x);
+  	pool.push_back(t);
+//  	xpsms.push_back(matchScan(xlinks, it->second, error, top));
+  }
+  
+  for(pthread_t &t : pool) {
+  	pthread_join(t, NULL);
   }
   
   return xpsms;
