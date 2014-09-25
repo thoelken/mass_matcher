@@ -4,7 +4,9 @@
 #include <map>
 #include <vector>
 #include <cmath>
-#include <pthread.h>
+#include <future>
+#include <mutex>
+#include <string.h>
 
 using namespace std;
 
@@ -21,6 +23,11 @@ struct xpsm {
   ion scan;
   map<double, ion> candidates;
 };
+
+
+std::mutex m;
+const int MAX_NUM_THREADS = 8;
+int thread_queue;
 
 
 map<double, ion> parse(const char* filename) {
@@ -117,35 +124,83 @@ xpsm matchScan(map<double, ion> xlinks, ion scan, double error = 0.00001, int to
   return x;
 }
 
+xpsm matchScanThread(map<double, ion> &xlinks, ion scan, double error, int top) {
+	//cerr << "processing one thread" << endl;
+  map<double, ion> submap ( xlinks.lower_bound(scan.mass-scan.mass*error), xlinks.upper_bound(scan.mass+scan.mass*error) );
+  
+  map<double, ion> candidates;
+  for(map<double, ion>::iterator it=submap.begin(); it!=submap.end(); ++it) {
+    candidates.insert(pair<double, ion>(abs(scan.mass-(it->first)), it->second));
+  }
+  
+  while(candidates.size() > top) {
+    candidates.erase(--candidates.end());
+  }
+  
+  xpsm x; x.scan = scan; x.candidates = candidates;
+  m.lock(); thread_queue--; m.unlock();
+  return x;
+}
+
 
 vector<xpsm> match(map<double, ion> xlinks, map<double, ion> scans, double error = 0.00001, int top = 100) {
 
   vector<xpsm> xpsms;
+  vector< std::future<xpsm> > results;
+  int i=0;
+  thread_queue = 0;
   for(map<double, ion>::iterator it=scans.begin(); it!=scans.end(); ++it) {
- 	xpsms.push_back(matchScan(xlinks, it->second, error, top));
+  	while(thread_queue > MAX_NUM_THREADS) {
+  		//cerr << "there are " << thread_queue << " threads currently in the queue" << endl;
+  	}
+  	m.lock(); thread_queue++; m.unlock();
+  	results.push_back(
+  		async(launch::async, matchScanThread, ref(xlinks), it->second, error, top)
+  	);
+  	i++;
+// 	xpsms.push_back(matchScan(xlinks, it->second, error, top));
   }
   
-  return xpsms;
+  vector<xpsm> t_xpsms;
+  for(int j=0; j<i; j++) {
+  	t_xpsms.push_back(results[j].get());
+  }
+  
+  return t_xpsms;
 }
 
 
-int main(const int argv, const char** args) {
-  char sep = '\t';
-  if(argv==4) { sep = args[3][0]; }
+int main(const int argc, const char** argv) {
+
+	vector<char*> files;
+	char sep = '\t';
+	double error = 0.00001;	// 10ppm
+	int top = 10;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i],"-s")==0) {
+		    sep = argv[++i][0];
+		} else if (strcmp(argv[i],"-e")==0) {
+		    error = atof(argv[++i]);
+		} else if (strcmp(argv[i],"-t")==0) {
+		    top = atoi(argv[++i]);
+		}		
+	}
+	const char* xlink_file = argv[argc-2];
+	const char* scan_file = argv[argc-1];
 	
-  map<double, ion> candidates = parse(args[1]);
+  map<double, ion> candidates = parse(xlink_file);
 //  for(map<double, ion>::iterator it=candidates.begin(); it!=candidates.end(); ++it) {
 //    printf("%16.16f\n", it->first);
 //  }
 
   cout << "============\n";
 
-  map<double, ion> scans = parseMGF(args[2]);
+  map<double, ion> scans = parseMGF(scan_file);
   
   
   printf("scan_id%1$cscan_mass%1$cxlink_id%1$cxlink_mass%1$cerror\n", sep);
   
-  vector<xpsm> xpsms = match(candidates, scans, 0.00001, 3);
+  vector<xpsm> xpsms = match(candidates, scans, error, top);
   for(vector<xpsm>::iterator it=xpsms.begin(); it!=xpsms.end(); ++it) {
   	for(map<double, ion>::iterator x=it->candidates.begin(); x!=it->candidates.end(); ++x) {
   		//cout << it->scan.text << it->scan.mass << " " << x->first << " " << x->second.text << endl;
